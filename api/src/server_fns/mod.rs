@@ -10,6 +10,7 @@ pub mod search;
 pub mod settings;
 pub mod system;
 pub mod user;
+pub mod bulk;
 
 pub use auth::*;
 pub use discovery::*;
