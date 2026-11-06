@@ -22,6 +22,7 @@ pub use search::*;
 pub use settings::*;
 pub use system::*;
 pub use user::*;
+pub use bulk::*;
 
 pub fn server_error<E: std::fmt::Display>(e: E) -> ServerFnError {
     ServerFnError::ServerError {
