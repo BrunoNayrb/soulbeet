@@ -15,7 +15,7 @@ use ui::{
     AutoDownloadSignal, Downloads, HealthProvider, Layout, Navbar, SearchPrefill, SearchReset,
     SettingsProvider,
 };
-use views::{DashboardPage, LoginPage, SearchPage, SettingsPage, SettingsTab, SettingsTabRequest};
+use views::{DashboardPage, LoginPage, SearchPage, SettingsPage, SettingsTab, SettingsTabRequest, BulkPage};
 
 mod auth;
 mod views;
@@ -36,6 +36,8 @@ pub enum Route {
             DashboardPage {},
             #[route("/settings")]
             SettingsPage {},
+            #[route("/bulk")]
+            BulkPage {},
 }
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");
@@ -215,6 +217,24 @@ fn WebNavbar() -> Element {
                             stroke_linejoin: "round",
                             stroke_width: "2",
                             d: "M15 12a3 3 0 11-6 0 3 3 0 016 0z",
+                        }
+                    }
+                }
+                Link {
+                    class: "nav-link text-white font-medium border-b-2 border-transparent hover:border-beet-accent pb-0.5",
+                    active_class: "border-beet-accent",
+                    to: Route::BulkPage {},
+                    span { class: "hidden md:block", "Bulk" }
+                    svg {
+                        class: "md:hidden w-6 h-6",
+                        fill: "none",
+                        stroke: "currentColor",
+                        view_box: "0 0 24 24",
+                        path {
+                            stroke_linecap: "round",
+                            stroke_linejoin: "round",
+                            stroke_width: "2",
+                            d: "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
                         }
                     }
                 }
