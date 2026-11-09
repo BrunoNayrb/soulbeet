@@ -3,8 +3,8 @@ use api::server_fns::bulk::{bulk_import, BulkRow, BulkResult};
 
 #[component]
 pub fn BulkPage() -> Element {
-    let mut csv_text = use_signal(|| String::new());
-    let mut results = use_signal(|| Vec::<BulkResult>::new());
+    let mut csv_text = use_signal(String::new);
+    let mut results = use_signal(Vec::<BulkResult>::new);
     let mut loading = use_signal(|| false);
 
     let submit = move |_| {
@@ -15,7 +15,7 @@ pub fn BulkPage() -> Element {
                 .lines()
                 .skip(1) // skip header
                 .filter_map(|line| {
-                    let parts: Vec<&str> = line.split(',').collect();
+                    let parts: Vec<&str> = line.splitn(3, ',').collect();
                     if parts.len() >= 2 {
                         Some(BulkRow {
                             title: parts[0].trim().to_string(),
@@ -49,7 +49,7 @@ pub fn BulkPage() -> Element {
             p { class: "mb-4 text-gray-400", "Paste a CSV with columns: title,album,artist" }
             textarea {
                 class: "w-full h-48 p-3 bg-gray-800 border border-gray-700 rounded text-sm font-mono",
-                placeholder: "title,album,artist\nAPT,APT,ROSÉ, Bruno Mars\n1985,1985,Bowling for Soup",
+                placeholder: "title,album,artist\nAPT,APT,ROSÉ & Bruno Mars\n1985,1985,Bowling for Soup",
                 value: "{csv_text}",
                 oninput: move |e| csv_text.set(e.value()),
             }
@@ -73,11 +73,17 @@ pub fn BulkPage() -> Element {
                         }
                         tbody {
                             for result in results() {
-                                tr { class: "border-b border-gray-800",
-                                    td { "{result.row.title}" }
-                                    td { "{result.row.artist}" }
-                                    td { class: if result.status == "queued" { "text-green-400" } else { "text-red-400" }, "{result.status}" }
-                                    td { "{result.source.as_deref().or(result.reason.as_deref()).unwrap_or(\"-\")}" }
+                                {
+                                    let status_color = if result.status == "queued" { "text-green-400" } else { "text-red-400" };
+                                    let detail = result.source.as_deref().or(result.reason.as_deref()).unwrap_or("-");
+                                    rsx! {
+                                        tr { class: "border-b border-gray-800",
+                                            td { "{result.row.title}" }
+                                            td { "{result.row.artist}" }
+                                            td { class: "{status_color}", "{result.status}" }
+                                            td { "{detail}" }
+                                        }
+                                    }
                                 }
                             }
                         }
