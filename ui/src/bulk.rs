@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use crate::server_fns::bulk::{bulk_import, BulkRow, BulkResult};
+use api::server_fns::bulk::{bulk_import, BulkRow, BulkResult};
 
 #[component]
 pub fn BulkPage() -> Element {
