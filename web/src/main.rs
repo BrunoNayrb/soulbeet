@@ -12,10 +12,10 @@ use dioxus::fullstack::WebSocketOptions;
 use websocket::use_resilient_websocket;
 
 use ui::{
-    AutoDownloadSignal, Downloads, HealthProvider, Layout, Navbar, SearchPrefill, SearchReset,
-    SettingsProvider,
+    AutoDownloadSignal, BulkPage, Downloads, HealthProvider, Layout, Navbar, SearchPrefill,
+    SearchReset, SettingsProvider,
 };
-use views::{DashboardPage, LoginPage, SearchPage, SettingsPage, SettingsTab, SettingsTabRequest, BulkPage};
+use views::{DashboardPage, LoginPage, SearchPage, SettingsPage, SettingsTab, SettingsTabRequest};
 
 mod auth;
 mod views;
