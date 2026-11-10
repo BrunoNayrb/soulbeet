@@ -1,4 +1,5 @@
 use super::search::{search_album, search_track, SearchQuery};
+use crate::AuthSession;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
