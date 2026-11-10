@@ -2,6 +2,22 @@ use super::search::{search_album, search_track, SearchQuery};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "server")]
+use std::path::PathBuf;
+#[cfg(feature = "server")]
+use std::time::{Duration, Instant};
+
+#[cfg(feature = "server")]
+use shared::download::{
+    DownloadEvent, DownloadProgress, DownloadState, DownloadableGroup, DownloadableItem,
+    EnqueueStatus, SearchState,
+};
+#[cfg(feature = "server")]
+use shared::metadata::Track;
+
+const HISTORY_PATH: &str = "/data/bulk_history.json";
+const HISTORY_LIMIT: usize = 200;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BulkRow {
     pub title: String,
@@ -18,14 +34,23 @@ pub struct BulkResult {
 }
 
 const LIVE_KEYWORDS: &[&str] = &[
-    "live", "concert", "session", "acoustic", "unplugged",
-    "bootleg", "demo", "rehearsal", "tour", "festival",
+    "live", "concert", "session", "acoustic", "unplugged", "bootleg", "demo", "rehearsal",
+    "tour", "festival",
 ];
 
 fn is_live(s: &str) -> bool {
-    let lower = s.to_lowercase();
-    LIVE_KEYWORDS.iter().any(|kw| lower.contains(kw))
+    s.to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| LIVE_KEYWORDS.contains(&word))
 }
+
+fn loose(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || c.is_whitespace())
+        .collect()
+}
+
 fn label(result: &shared::metadata::SearchResult) -> String {
     match result {
         shared::metadata::SearchResult::Track(track) => format!(
@@ -34,17 +59,17 @@ fn label(result: &shared::metadata::SearchResult) -> String {
             track.album_title.as_deref().unwrap_or(""),
             track.artist
         ),
-        shared::metadata::SearchResult::Album(album) => {
-            format!("{} {}", album.title, album.artist)
-        }
+        shared::metadata::SearchResult::Album(album) => format!("{} {}", album.title, album.artist),
     }
 }
 
-#[post("/api/bulk/import")]
+#[post("/api/bulk/import", auth: AuthSession)]
 pub async fn bulk_import(
     rows: Vec<BulkRow>,
     target_folder: String,
 ) -> Result<Vec<BulkResult>, ServerFnError> {
+    let username = auth.0.username.clone();
+    let user_id = auth.0.sub.clone();
     let mut results = Vec::new();
 
     for row in rows {
@@ -55,7 +80,8 @@ pub async fn bulk_import(
             source: None,
         };
 
-        // 1. Try album search first
+        let mut matched = false;
+
         if let Some(album) = &row.album {
             let query = SearchQuery {
                 artist: Some(row.artist.clone()),
@@ -63,46 +89,311 @@ pub async fn bulk_import(
                 provider: None,
             };
             if let Ok(album_results) = search_album(query).await {
-                if let Some(album_match) = album_results.results.iter().find(|a| !is_live(&label(a))) {
-                    // Found an album — now look for the specific track
+                if album_results
+                    .results
+                    .iter()
+                    .any(|album_match| !is_live(&label(album_match)))
+                {
                     let track_query = SearchQuery {
                         artist: Some(row.artist.clone()),
                         query: row.title.clone(),
                         provider: None,
                     };
                     if let Ok(track_results) = search_track(track_query).await {
-                        if let Some(track) = track_results.results.iter().find(|t| !is_live(&label(t))) {
-                            result.status = "queued".into();
-                            result.reason = None;
-                            result.source = Some(format!("album:{}", label(album_match)));
-                            results.push(result);
-                            continue;
+                        if track_results
+                            .results
+                            .iter()
+                            .any(|track| !is_live(&label(track)))
+                        {
+                            matched = true;
+                        } else if !track_results.results.is_empty() {
+                            result.reason = Some("Only live versions found".into());
                         }
                     }
                 }
             }
         }
 
-        // 2. Fallback: single track search
-        let track_query = SearchQuery {
-            artist: Some(row.artist.clone()),
-            query: row.title.clone(),
-            provider: None,
-        };
-        if let Ok(track_results) = search_track(track_query).await {
-                if let Some(track) = track_results.results.iter().find(|t| !is_live(&label(t))) {
-                result.status = "queued".into();
-                result.reason = None;
-                result.source = Some("track".into());
+        if !matched && result.reason.as_deref() != Some("Only live versions found") {
+            let track_query = SearchQuery {
+                artist: Some(row.artist.clone()),
+                query: row.title.clone(),
+                provider: None,
+            };
+            if let Ok(track_results) = search_track(track_query).await {
+                if track_results
+                    .results
+                    .iter()
+                    .any(|track| !is_live(&label(track)))
+                {
+                    matched = true;
+                } else if !track_results.results.is_empty() {
+                    result.reason = Some("Only live versions found".into());
+                }
             } else {
-                result.reason = Some("Only live versions found".into());
+                result.reason = Some("Search failed".into());
             }
-        } else {
-            result.reason = Some("Search failed".into());
+        }
+
+        if matched {
+            match queue_matched(&row, &target_folder, &username, &user_id).await {
+                Ok(source) => {
+                    result.status = "queued".into();
+                    result.reason = None;
+                    result.source = Some(source);
+                }
+                Err(reason) => {
+                    result.status = "failed".into();
+                    result.reason = Some(reason);
+                    result.source = None;
+                }
+            }
         }
 
         results.push(result);
     }
 
+    remember(&results).await;
     Ok(results)
+}
+
+#[post("/api/bulk/history", auth: AuthSession)]
+pub async fn bulk_history() -> Result<Vec<BulkResult>, ServerFnError> {
+    Ok(read_history().await)
+}
+
+#[post("/api/bulk/history/clear", auth: AuthSession)]
+pub async fn clear_bulk_history() -> Result<(), ServerFnError> {
+    let _ = tokio::fs::remove_file(HISTORY_PATH).await;
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn remember(new_rows: &[BulkResult]) {
+    if new_rows.is_empty() {
+        return;
+    }
+    let mut all = new_rows.to_vec();
+    all.extend(read_history().await);
+    all.truncate(HISTORY_LIMIT);
+    if let Ok(text) = serde_json::to_string_pretty(&all) {
+        let _ = tokio::fs::write(HISTORY_PATH, text).await;
+    }
+}
+
+#[cfg(not(feature = "server"))]
+async fn remember(_new_rows: &[BulkResult]) {}
+
+#[cfg(feature = "server")]
+async fn read_history() -> Vec<BulkResult> {
+    match tokio::fs::read_to_string(HISTORY_PATH).await {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[cfg(not(feature = "server"))]
+async fn read_history() -> Vec<BulkResult> {
+    Vec::new()
+}
+
+#[cfg(feature = "server")]
+async fn queue_matched(
+    row: &BulkRow,
+    target_folder: &str,
+    username: &str,
+    user_id: &str,
+) -> Result<String, String> {
+    use crate::globals::{get_or_create_user_channel, register_user_task, unregister_user_task};
+    use crate::models::folder::Folder;
+    use crate::server_fns::download::enqueue::{deliver, enqueue_request, stopped_rows, Watcher};
+    use crate::server_fns::download::monitor::{DownloadMonitor, WatchedTransfer};
+    use crate::services::download_backend;
+    use crate::transfer_registry::{BatchRef, TransferOwner};
+
+    let folder = Folder::find_for_user_by_path(user_id, target_folder)
+        .await
+        .map_err(|e| e)?
+        .ok_or_else(|| {
+            format!("Folder not found: {target_folder}. Add that exact path in Soulbeet settings.")
+        })?;
+    tokio::fs::create_dir_all(&folder.path)
+        .await
+        .map_err(|e| format!("Could not create {target_folder}: {e}"))?;
+
+    let backend = download_backend(None).await.map_err(|e| e)?;
+    let track = Track {
+        id: String::new(),
+        title: row.title.clone(),
+        artist: row.artist.clone(),
+        album_id: None,
+        album_title: row.album.clone(),
+        release_date: None,
+        duration: None,
+        mbid: None,
+        release_mbid: None,
+    };
+    let search_id = backend
+        .start_search(None, std::slice::from_ref(&track))
+        .await
+        .map_err(|e| format!("slskd search failed: {e}"))?;
+
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let mut latest = None;
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let polled = backend
+            .poll_search(&search_id)
+            .await
+            .map_err(|e| format!("slskd poll failed: {e}"))?;
+        let done = matches!(
+            polled.state,
+            SearchState::Completed | SearchState::NotFound | SearchState::TimedOut
+        );
+        latest = Some(polled);
+        if done || Instant::now() >= deadline {
+            break;
+        }
+    }
+
+    let groups = latest.map(|result| result.groups).unwrap_or_default();
+    let picked = pick_file(&groups, &row.title)
+        .ok_or_else(|| "No matching non-live file on slskd".to_string())?;
+    let source = format!("{} ({})", picked.title, picked.quality);
+
+    let fresh = BatchRef::new(
+        TransferOwner {
+            user_id: user_id.to_string(),
+            batch_id: uuid::Uuid::new_v4().to_string(),
+        },
+        row.title.clone(),
+        PathBuf::from(&folder.path),
+    );
+    let enq = enqueue_request(&backend, vec![picked], fresh).await;
+    if let Some(err) = &enq.error {
+        return Err(format!("Could not queue download: {err:?}"));
+    }
+
+    let batch = enq.batch;
+    let results = enq.results;
+    let watcher = enq.watcher;
+    let (tx, _) = get_or_create_user_channel(username).await;
+    let enqueued: Vec<_> = results
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.status,
+                EnqueueStatus::Enqueued | EnqueueStatus::AlreadyInFlight
+            )
+        })
+        .cloned()
+        .collect();
+
+    if enqueued.is_empty() {
+        let why = results
+            .iter()
+            .find_map(|row| match &row.status {
+                EnqueueStatus::Failed(reason) => Some(reason.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "Download was not queued".into());
+        return Err(why);
+    }
+
+    let queued_rows: Vec<_> = enqueued
+        .iter()
+        .map(|row| DownloadProgress {
+            id: row.id.clone(),
+            source: row.source.clone(),
+            item: row.item.clone(),
+            size: row.size,
+            transferred: 0,
+            state: DownloadState::Queued,
+            percent: 0.0,
+            speed: 0.0,
+            error: None,
+            backend: Some(backend.id().to_string()),
+            batch_id: Some(batch.owner.batch_id.clone()),
+            batch_label: Some(batch.label.clone()),
+            local_path: None,
+            import_output: None,
+            retryable: false,
+            can_choose_import: false,
+        })
+        .collect();
+    let _ = tx.send(DownloadEvent::Progress(queued_rows));
+
+    match watcher {
+        Watcher::Joined(reservation) => {
+            let lost = deliver(reservation, &enqueued, &backend, &batch).await;
+            if !lost.is_empty() {
+                let _ = tx.send(DownloadEvent::Progress(stopped_rows(&lost, &batch)));
+            }
+        }
+        Watcher::Own if enqueued.is_empty() && batch.inbox.close_if_idle() => {}
+        Watcher::Own => {
+            let transfers: Vec<WatchedTransfer> =
+                enqueued.iter().map(WatchedTransfer::from).collect();
+            let task_username = username.to_string();
+            let task_cancellation = register_user_task(username).await;
+            tokio::spawn(async move {
+                let mut monitor = DownloadMonitor::new(
+                    transfers,
+                    batch.target.clone(),
+                    tx,
+                    task_cancellation,
+                    task_username.clone(),
+                    batch,
+                );
+                monitor.run().await;
+                unregister_user_task(&task_username).await;
+            });
+        }
+    }
+
+    Ok(source)
+}
+
+#[cfg(not(feature = "server"))]
+async fn queue_matched(
+    _row: &BulkRow,
+    _target_folder: &str,
+    _username: &str,
+    _user_id: &str,
+) -> Result<String, String> {
+    Err("server only".into())
+}
+
+#[cfg(feature = "server")]
+fn pick_file(groups: &[DownloadableGroup], wanted_title: &str) -> Option<DownloadableItem> {
+    let wanted = loose(wanted_title);
+    let mut best: Option<(f64, DownloadableItem)> = None;
+    for group in groups {
+        let group_label = format!("{} {}", group.title, group.artist.as_deref().unwrap_or(""));
+        if is_live(&group_label) {
+            continue;
+        }
+        for item in &group.items {
+            let item_label = format!("{} {} {}", item.title, item.album, item.artist);
+            if is_live(&item_label) {
+                continue;
+            }
+            let title = loose(&item.title);
+            if !title.contains(&wanted) && !wanted.contains(&title) {
+                continue;
+            }
+            let mut score = item.quality_score;
+            if item.quality.to_lowercase().contains("flac") {
+                score += 1.0;
+            }
+            let replace = best
+                .as_ref()
+                .map(|(current, _)| score > *current)
+                .unwrap_or(true);
+            if replace {
+                best = Some((score, item.clone()));
+            }
+        }
+    }
+    best.map(|(_, item)| item)
 }
