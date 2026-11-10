@@ -26,6 +26,19 @@ fn is_live(s: &str) -> bool {
     let lower = s.to_lowercase();
     LIVE_KEYWORDS.iter().any(|kw| lower.contains(kw))
 }
+fn label(result: &shared::metadata::SearchResult) -> String {
+    match result {
+        shared::metadata::SearchResult::Track(track) => format!(
+            "{} {} {}",
+            track.title,
+            track.album_title.as_deref().unwrap_or(""),
+            track.artist
+        ),
+        shared::metadata::SearchResult::Album(album) => {
+            format!("{} {}", album.title, album.artist)
+        }
+    }
+}
 
 #[post("/api/bulk/import")]
 pub async fn bulk_import(
@@ -50,7 +63,7 @@ pub async fn bulk_import(
                 provider: None,
             };
             if let Ok(album_results) = search_album(query).await {
-                if let Some(album_match) = album_results.results.first() {
+                if let Some(album_match) = album_results.results.iter().find(|a| !is_live(&label(a))) {
                     // Found an album — now look for the specific track
                     let track_query = SearchQuery {
                         artist: Some(row.artist.clone()),
@@ -58,12 +71,10 @@ pub async fn bulk_import(
                         provider: None,
                     };
                     if let Ok(track_results) = search_track(track_query).await {
-                        if let Some(track) = track_results.results.iter().find(|t| {
-                            !is_live(&t.to_string()) // crude but works for path/title
-                        }) {
+                        if let Some(track) = track_results.results.iter().find(|t| !is_live(&label(t))) {
                             result.status = "queued".into();
                             result.reason = None;
-                            result.source = Some(format!("album:{}", album_match));
+                            result.source = Some(format!("album:{}", label(album_match)));
                             results.push(result);
                             continue;
                         }
@@ -79,7 +90,7 @@ pub async fn bulk_import(
             provider: None,
         };
         if let Ok(track_results) = search_track(track_query).await {
-            if let Some(track) = track_results.results.iter().find(|t| !is_live(&t.to_string())) {
+                if let Some(track) = track_results.results.iter().find(|t| !is_live(&label(t))) {
                 result.status = "queued".into();
                 result.reason = None;
                 result.source = Some("track".into());
