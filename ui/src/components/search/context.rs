@@ -8,4 +8,7 @@ pub struct SearchReset(pub Signal<u32>);
 pub struct SearchPrefill(pub Signal<Option<(String, String)>>);
 
 #[derive(Clone, Copy)]
+pub struct SearchGo(pub Signal<bool>);
+
+#[derive(Clone, Copy)]
 pub struct AutoDownloadSignal(pub Signal<Option<AutoDownloadEvent>>);
