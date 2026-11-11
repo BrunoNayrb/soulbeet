@@ -3,6 +3,7 @@ use api::server_fns::bulk::{
     bulk_history, bulk_import, clear_bulk_history, BulkResult, BulkRow,
 };
 use crate::{SearchGo, SearchPrefill};
+use gloo_timers::future::TimeoutFuture;
 
 #[component]
 pub fn BulkPage() -> Element {
@@ -10,6 +11,7 @@ pub fn BulkPage() -> Element {
     let mut results = use_signal(Vec::<BulkResult>::new);
     let mut loading = use_signal(|| false);
     let mut loaded = use_signal(|| false);
+    let mut polling = use_signal(|| false);
     let search_prefill = try_use_context::<SearchPrefill>();
     let search_go = try_use_context::<SearchGo>();
 
@@ -22,6 +24,21 @@ pub fn BulkPage() -> Element {
             if let Ok(rows) = bulk_history().await {
                 results.set(rows);
             }
+        });
+    });
+
+    use_effect(move || {
+        let still_working = results.read().iter().any(|row| row.status == "working");
+        if !still_working || polling() {
+            return;
+        }
+        polling.set(true);
+        spawn(async move {
+            TimeoutFuture::new(3000).await;
+            if let Ok(rows) = bulk_history().await {
+                results.set(rows);
+            }
+            polling.set(false);
         });
     });
 
@@ -50,11 +67,7 @@ pub fn BulkPage() -> Element {
                 .collect();
 
             match bulk_import(rows, "/share/Media/Music/Bryan".to_string()).await {
-                Ok(res) => {
-                    let mut all = res;
-                    all.extend(results.read().clone());
-                    results.set(all);
-                }
+                Ok(res) => results.set(res),
                 Err(e) => {
                     let mut all = results.read().clone();
                     all.insert(
@@ -123,9 +136,13 @@ pub fn BulkPage() -> Element {
                         tbody {
                             for result in results() {
                                 {
-                                    let status_color = if result.status == "queued" { "text-green-400" } else { "text-red-400" };
+                                    let status_color = match result.status.as_str() {
+                                        "queued" => "text-green-400",
+                                        "working" => "text-yellow-400",
+                                        _ => "text-red-400",
+                                    };
                                     let detail = result.source.as_deref().or(result.reason.as_deref()).unwrap_or("-");
-                                    let failed = result.status != "queued";
+                                    let failed = result.status != "queued" && result.status != "working";
                                     let artist = result.row.artist.clone();
                                     let album = result.row.album.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| result.row.title.clone());
                                     let mut prefill = search_prefill;
