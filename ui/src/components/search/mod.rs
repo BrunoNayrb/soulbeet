@@ -2,7 +2,7 @@ pub mod album;
 pub mod context;
 pub mod track;
 
-pub use context::{AutoDownloadSignal, SearchPrefill, SearchReset};
+pub use context::{AutoDownloadSignal, SearchGo, SearchPrefill, SearchReset};
 
 mod download_icon;
 pub use download_icon::{DownloadIcon, DownloadRowState};
