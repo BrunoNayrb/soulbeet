@@ -12,8 +12,8 @@ use dioxus::fullstack::WebSocketOptions;
 use websocket::use_resilient_websocket;
 
 use ui::{
-    AutoDownloadSignal, BulkPage, Downloads, HealthProvider, Layout, Navbar, SearchPrefill,
-    SearchReset, SettingsProvider,
+    AutoDownloadSignal, BulkPage, Downloads, HealthProvider, Layout, Navbar, SearchGo,
+    SearchPrefill, SearchReset, SettingsProvider,
 };
 use views::{DashboardPage, LoginPage, SearchPage, SettingsPage, SettingsTab, SettingsTabRequest};
 
@@ -117,8 +117,17 @@ fn WebNavbar() -> Element {
     let mut downloads = use_signal::<HashMap<String, DownloadProgress>>(HashMap::new);
 
     let search_prefill = use_signal(|| None::<(String, String)>);
+    let mut go_search = use_signal(|| false);
     use_context_provider(|| SearchReset(search_reset));
     use_context_provider(|| SearchPrefill(search_prefill));
+    use_context_provider(|| SearchGo(go_search));
+    let nav = use_navigator();
+    use_effect(move || {
+        if go_search() {
+            go_search.set(false);
+            nav.push(Route::SearchPage {});
+        }
+    });
     let settings_tab_request = use_signal(|| None::<SettingsTab>);
     use_context_provider(|| SettingsTabRequest(settings_tab_request));
 
