@@ -1,7 +1,9 @@
 use dioxus::prelude::*;
+use api::models::folder::Folder;
 use api::server_fns::bulk::{
     bulk_history, bulk_import, clear_bulk_history, BulkResult, BulkRow,
 };
+use api::server_fns::folder::get_user_folders;
 use crate::{SearchGo, SearchPrefill};
 use gloo_timers::future::TimeoutFuture;
 
@@ -12,6 +14,8 @@ pub fn BulkPage() -> Element {
     let mut loading = use_signal(|| false);
     let mut loaded = use_signal(|| false);
     let mut polling = use_signal(|| false);
+    let mut folders = use_signal(Vec::<Folder>::new);
+    let mut selected_path = use_signal(String::new);
     let search_prefill = try_use_context::<SearchPrefill>();
     let search_go = try_use_context::<SearchGo>();
 
@@ -23,6 +27,14 @@ pub fn BulkPage() -> Element {
         spawn(async move {
             if let Ok(rows) = bulk_history().await {
                 results.set(rows);
+            }
+            if let Ok(found) = get_user_folders().await {
+                if selected_path.read().is_empty() {
+                    if let Some(first) = found.first() {
+                        selected_path.set(first.path.clone());
+                    }
+                }
+                folders.set(found);
             }
         });
     });
@@ -44,8 +56,29 @@ pub fn BulkPage() -> Element {
 
     let submit = move |_| {
         let text = csv_text.read().clone();
+        let target = selected_path.read().clone();
         loading.set(true);
         spawn(async move {
+            if target.is_empty() {
+                let mut all = results.read().clone();
+                all.insert(
+                    0,
+                    BulkResult {
+                        row: BulkRow {
+                            title: "Error".into(),
+                            album: None,
+                            artist: String::new(),
+                        },
+                        status: "error".into(),
+                        reason: Some("Add a music folder in Settings before importing.".into()),
+                        source: None,
+                    },
+                );
+                results.set(all);
+                loading.set(false);
+                return;
+            }
+
             let rows: Vec<BulkRow> = text
                 .lines()
                 .skip(1)
@@ -66,7 +99,7 @@ pub fn BulkPage() -> Element {
                 })
                 .collect();
 
-            match bulk_import(rows, "/share/Media/Music/Bryan".to_string()).await {
+            match bulk_import(rows, target).await {
                 Ok(res) => results.set(res),
                 Err(e) => {
                     let mut all = results.read().clone();
@@ -101,6 +134,21 @@ pub fn BulkPage() -> Element {
         div { class: "p-6 max-w-7xl mx-auto w-full",
             h1 { class: "text-2xl font-bold mb-4", "Bulk CSV Import" }
             p { class: "mb-4 text-gray-400", "Paste a CSV with columns: title,album,artist. The first line is skipped." }
+            if folders().is_empty() {
+                p { class: "mb-4 text-yellow-400", "Add a music folder in Settings before importing." }
+            } else {
+                label { class: "block mb-4 text-sm text-gray-300",
+                    "Library"
+                    select {
+                        class: "mt-1 w-full p-2 bg-gray-800 border border-gray-700 rounded",
+                        value: "{selected_path}",
+                        onchange: move |event| selected_path.set(event.value()),
+                        for folder in folders() {
+                            option { value: "{folder.path}", "{folder.name} — {folder.path}" }
+                        }
+                    }
+                }
+            }
             textarea {
                 class: "w-full h-64 min-h-40 p-3 bg-gray-800 border border-gray-700 rounded text-sm font-mono resize",
                 placeholder: "title,album,artist\nAlive,Ten,Pearl Jam",
@@ -110,7 +158,7 @@ pub fn BulkPage() -> Element {
             div { class: "mt-3 flex gap-3",
                 button {
                     class: "px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded disabled:opacity-50",
-                    disabled: loading(),
+                    disabled: loading() || selected_path().is_empty(),
                     onclick: submit,
                     if loading() { "Importing..." } else { "Import" }
                 }
