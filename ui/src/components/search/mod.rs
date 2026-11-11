@@ -534,6 +534,8 @@ pub fn Search() -> Element {
             if let Some((prefill_artist, prefill_query)) = (prefill.0)() {
                 artist.set(Some(prefill_artist));
                 search.set(prefill_query);
+                search_type.set(SearchType::Album);
+                synced.set(true);
                 (prefill.0).set(None);
                 spawn(perform_search());
             }
