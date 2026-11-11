@@ -71,91 +71,32 @@ pub async fn bulk_import(
 ) -> Result<Vec<BulkResult>, ServerFnError> {
     let username = auth.0.username.clone();
     let user_id = auth.0.sub.clone();
-    let mut results = Vec::new();
-
-    for row in rows {
-        let mut result = BulkResult {
-            row: row.clone(),
-            status: "failed".into(),
-            reason: Some("No match found".into()),
+    let pending: Vec<BulkResult> = rows
+        .iter()
+        .cloned()
+        .map(|row| BulkResult {
+            row,
+            status: "working".into(),
+            reason: Some("Searching".into()),
             source: None,
-        };
+        })
+        .collect();
+    remember(&pending).await;
 
-        let mut matched = false;
-
-        if let Some(album) = &row.album {
-            let query = SearchQuery {
-                artist: Some(row.artist.clone()),
-                query: album.clone(),
-                provider: None,
-            };
-            if let Ok(album_results) = search_album(query).await {
-                if album_results
-                    .results
-                    .iter()
-                    .any(|album_match| !is_live(&label(album_match)))
-                {
-                    let track_query = SearchQuery {
-                        artist: Some(row.artist.clone()),
-                        query: row.title.clone(),
-                        provider: None,
-                    };
-                    if let Ok(track_results) = search_track(track_query).await {
-                        if track_results
-                            .results
-                            .iter()
-                            .any(|track| !is_live(&label(track)))
-                        {
-                            matched = true;
-                        } else if !track_results.results.is_empty() {
-                            result.reason = Some("Only live versions found".into());
-                        }
-                    }
-                }
-            }
-        }
-
-        if !matched && result.reason.as_deref() != Some("Only live versions found") {
-            let track_query = SearchQuery {
-                artist: Some(row.artist.clone()),
-                query: row.title.clone(),
-                provider: None,
-            };
-            if let Ok(track_results) = search_track(track_query).await {
-                if track_results
-                    .results
-                    .iter()
-                    .any(|track| !is_live(&label(track)))
-                {
-                    matched = true;
-                } else if !track_results.results.is_empty() {
-                    result.reason = Some("Only live versions found".into());
-                }
-            } else {
-                result.reason = Some("Search failed".into());
-            }
-        }
-
-        if matched {
-            match queue_matched(&row, &target_folder, &username, &user_id).await {
-                Ok(source) => {
-                    result.status = "queued".into();
-                    result.reason = None;
-                    result.source = Some(source);
-                }
-                Err(reason) => {
-                    result.status = "failed".into();
-                    result.reason = Some(reason);
-                    result.source = None;
-                }
-            }
-        }
-
-        results.push(result);
+    #[cfg(feature = "server")]
+    {
+        let rows = rows;
+        let target_folder = target_folder;
+        tokio::spawn(async move {
+            run_import(rows, target_folder, username, user_id).await;
+        });
+    }
+    #[cfg(not(feature = "server"))]
+    {
+        let _ = (rows, target_folder, username, user_id);
     }
 
-    remember(&results).await;
-    Ok(results)
+    Ok(read_history().await)
 }
 
 #[post("/api/bulk/history", auth: AuthSession)]
@@ -165,8 +106,113 @@ pub async fn bulk_history() -> Result<Vec<BulkResult>, ServerFnError> {
 
 #[post("/api/bulk/history/clear", auth: AuthSession)]
 pub async fn clear_bulk_history() -> Result<(), ServerFnError> {
-    let _ = tokio::fs::remove_file(HISTORY_PATH).await;
+    #[cfg(feature = "server")]
+    {
+        let _guard = history_lock().lock().await;
+        let _ = tokio::fs::remove_file(HISTORY_PATH).await;
+    }
     Ok(())
+}
+
+#[cfg(feature = "server")]
+fn history_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+#[cfg(feature = "server")]
+async fn run_import(rows: Vec<BulkRow>, target_folder: String, username: String, user_id: String) {
+    for row in rows {
+        let result = process_row(&row, &target_folder, &username, &user_id).await;
+        replace_working(&result).await;
+    }
+}
+
+#[cfg(feature = "server")]
+async fn process_row(
+    row: &BulkRow,
+    target_folder: &str,
+    username: &str,
+    user_id: &str,
+) -> BulkResult {
+    let mut result = BulkResult {
+        row: row.clone(),
+        status: "failed".into(),
+        reason: Some("No match found".into()),
+        source: None,
+    };
+
+    let mut matched = false;
+
+    if let Some(album) = &row.album {
+        let query = SearchQuery {
+            artist: Some(row.artist.clone()),
+            query: album.clone(),
+            provider: None,
+        };
+        if let Ok(album_results) = search_album(query).await {
+            if album_results
+                .results
+                .iter()
+                .any(|album_match| !is_live(&label(album_match)))
+            {
+                let track_query = SearchQuery {
+                    artist: Some(row.artist.clone()),
+                    query: row.title.clone(),
+                    provider: None,
+                };
+                if let Ok(track_results) = search_track(track_query).await {
+                    if track_results
+                        .results
+                        .iter()
+                        .any(|track| !is_live(&label(track)))
+                    {
+                        matched = true;
+                    } else if !track_results.results.is_empty() {
+                        result.reason = Some("Only live versions found".into());
+                    }
+                }
+            }
+        }
+    }
+
+    if !matched && result.reason.as_deref() != Some("Only live versions found") {
+        let track_query = SearchQuery {
+            artist: Some(row.artist.clone()),
+            query: row.title.clone(),
+            provider: None,
+        };
+        if let Ok(track_results) = search_track(track_query).await {
+            if track_results
+                .results
+                .iter()
+                .any(|track| !is_live(&label(track)))
+            {
+                matched = true;
+            } else if !track_results.results.is_empty() {
+                result.reason = Some("Only live versions found".into());
+            }
+        } else {
+            result.reason = Some("Search failed".into());
+        }
+    }
+
+    if matched {
+        match queue_matched(row, target_folder, username, user_id).await {
+            Ok(source) => {
+                result.status = "queued".into();
+                result.reason = None;
+                result.source = Some(source);
+            }
+            Err(reason) => {
+                result.status = "failed".into();
+                result.reason = Some(reason);
+                result.source = None;
+            }
+        }
+    }
+
+    result
 }
 
 #[cfg(feature = "server")]
@@ -174,28 +220,55 @@ async fn remember(new_rows: &[BulkResult]) {
     if new_rows.is_empty() {
         return;
     }
+    let _guard = history_lock().lock().await;
     let mut all = new_rows.to_vec();
-    all.extend(read_history().await);
+    all.extend(read_history_inner().await);
     all.truncate(HISTORY_LIMIT);
-    if let Ok(text) = serde_json::to_string_pretty(&all) {
-        let _ = tokio::fs::write(HISTORY_PATH, text).await;
-    }
+    write_history_inner(&all).await;
 }
 
 #[cfg(not(feature = "server"))]
 async fn remember(_new_rows: &[BulkResult]) {}
 
 #[cfg(feature = "server")]
+async fn replace_working(updated: &BulkResult) {
+    let _guard = history_lock().lock().await;
+    let mut all = read_history_inner().await;
+    if let Some(slot) = all.iter_mut().find(|item| {
+        item.status == "working"
+            && item.row.title == updated.row.title
+            && item.row.artist == updated.row.artist
+            && item.row.album == updated.row.album
+    }) {
+        *slot = updated.clone();
+    }
+    write_history_inner(&all).await;
+}
+
+#[cfg(feature = "server")]
 async fn read_history() -> Vec<BulkResult> {
+    let _guard = history_lock().lock().await;
+    read_history_inner().await
+}
+
+#[cfg(not(feature = "server"))]
+async fn read_history() -> Vec<BulkResult> {
+    Vec::new()
+}
+
+#[cfg(feature = "server")]
+async fn read_history_inner() -> Vec<BulkResult> {
     match tokio::fs::read_to_string(HISTORY_PATH).await {
         Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
         Err(_) => Vec::new(),
     }
 }
 
-#[cfg(not(feature = "server"))]
-async fn read_history() -> Vec<BulkResult> {
-    Vec::new()
+#[cfg(feature = "server")]
+async fn write_history_inner(rows: &[BulkResult]) {
+    if let Ok(text) = serde_json::to_string_pretty(rows) {
+        let _ = tokio::fs::write(HISTORY_PATH, text).await;
+    }
 }
 
 #[cfg(feature = "server")]
