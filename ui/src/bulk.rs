@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 use api::server_fns::bulk::{
     bulk_history, bulk_import, clear_bulk_history, BulkResult, BulkRow,
 };
+use crate::{SearchGo, SearchPrefill};
 
 #[component]
 pub fn BulkPage() -> Element {
@@ -9,6 +10,8 @@ pub fn BulkPage() -> Element {
     let mut results = use_signal(Vec::<BulkResult>::new);
     let mut loading = use_signal(|| false);
     let mut loaded = use_signal(|| false);
+    let search_prefill = try_use_context::<SearchPrefill>();
+    let search_go = try_use_context::<SearchGo>();
 
     use_effect(move || {
         if loaded() {
@@ -114,6 +117,7 @@ pub fn BulkPage() -> Element {
                                 th { class: "px-3 py-2", "Artist" }
                                 th { class: "px-3 py-2", "Status" }
                                 th { class: "px-3 py-2", "Source / Reason" }
+                                th { class: "px-3 py-2", "" }
                             }
                         }
                         tbody {
@@ -121,12 +125,33 @@ pub fn BulkPage() -> Element {
                                 {
                                     let status_color = if result.status == "queued" { "text-green-400" } else { "text-red-400" };
                                     let detail = result.source.as_deref().or(result.reason.as_deref()).unwrap_or("-");
+                                    let failed = result.status != "queued";
+                                    let artist = result.row.artist.clone();
+                                    let album = result.row.album.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| result.row.title.clone());
+                                    let mut prefill = search_prefill;
+                                    let mut go = search_go;
                                     rsx! {
                                         tr { class: "border-b border-gray-800",
                                             td { class: "px-3 py-2", "{result.row.title}" }
                                             td { class: "px-3 py-2", "{result.row.artist}" }
                                             td { class: "px-3 py-2 {status_color}", "{result.status}" }
                                             td { class: "px-3 py-2", "{detail}" }
+                                            td { class: "px-3 py-2",
+                                                if failed {
+                                                    button {
+                                                        class: "px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded",
+                                                        onclick: move |_| {
+                                                            if let Some(mut prefill) = prefill {
+                                                                (prefill.0).set(Some((artist.clone(), album.clone())));
+                                                            }
+                                                            if let Some(mut go) = go {
+                                                                (go.0).set(true);
+                                                            }
+                                                        },
+                                                        "Search album"
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
