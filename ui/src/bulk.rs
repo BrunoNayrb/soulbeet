@@ -40,13 +40,16 @@ pub fn BulkPage() -> Element {
     });
 
     use_effect(move || {
-        let still_working = results.read().iter().any(|row| row.status == "working");
-        if !still_working || polling() {
+        let still_open = results
+            .read()
+            .iter()
+            .any(|row| row.status == "working" || row.status == "queued");
+        if !still_open || polling() {
             return;
         }
         polling.set(true);
         spawn(async move {
-            TimeoutFuture::new(3000).await;
+            TimeoutFuture::new(5000).await;
             if let Ok(rows) = bulk_history().await {
                 results.set(rows);
             }
