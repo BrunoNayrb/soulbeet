@@ -34,9 +34,12 @@ pub struct PollQuery {
     pub backend: Option<String>,
 }
 
-#[post("/api/metadata/search/album", auth: AuthSession)]
-pub async fn search_album(input: SearchQuery) -> Result<SearchResults, ServerFnError> {
-    let user_settings = UserSettings::get(&auth.0.sub).await.map_err(server_error)?;
+#[cfg(feature = "server")]
+pub async fn search_album_for_user(
+    user_id: &str,
+    input: SearchQuery,
+) -> Result<SearchResults, ServerFnError> {
+    let user_settings = UserSettings::get(user_id).await.map_err(server_error)?;
     let provider = metadata_provider(
         input.provider.as_deref(),
         user_settings.lastfm_api_key.as_deref(),
@@ -56,9 +59,12 @@ pub async fn search_album(input: SearchQuery) -> Result<SearchResults, ServerFnE
     })
 }
 
-#[post("/api/metadata/search/track", auth: AuthSession)]
-pub async fn search_track(input: SearchQuery) -> Result<SearchResults, ServerFnError> {
-    let user_settings = UserSettings::get(&auth.0.sub).await.map_err(server_error)?;
+#[cfg(feature = "server")]
+pub async fn search_track_for_user(
+    user_id: &str,
+    input: SearchQuery,
+) -> Result<SearchResults, ServerFnError> {
+    let user_settings = UserSettings::get(user_id).await.map_err(server_error)?;
     let provider = metadata_provider(
         input.provider.as_deref(),
         user_settings.lastfm_api_key.as_deref(),
@@ -76,6 +82,16 @@ pub async fn search_track(input: SearchQuery) -> Result<SearchResults, ServerFnE
         provider: provider_enum,
         results,
     })
+}
+
+#[post("/api/metadata/search/album", auth: AuthSession)]
+pub async fn search_album(input: SearchQuery) -> Result<SearchResults, ServerFnError> {
+    search_album_for_user(&auth.0.sub, input).await
+}
+
+#[post("/api/metadata/search/track", auth: AuthSession)]
+pub async fn search_track(input: SearchQuery) -> Result<SearchResults, ServerFnError> {
+    search_track_for_user(&auth.0.sub, input).await
 }
 
 #[post("/api/metadata/album", auth: AuthSession)]
