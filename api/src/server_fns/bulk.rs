@@ -1,4 +1,5 @@
-use super::search::{search_album, search_track, SearchQuery};
+#[cfg(feature = "server")]
+use super::search::{search_album_for_user, search_track_for_user, SearchQuery};
 use crate::AuthSession;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -150,7 +151,7 @@ async fn process_row(
             query: album.clone(),
             provider: None,
         };
-        if let Ok(album_results) = search_album(query).await {
+        if let Ok(album_results) = search_album_for_user(user_id, query).await {
             if album_results
                 .results
                 .iter()
@@ -161,7 +162,7 @@ async fn process_row(
                     query: row.title.clone(),
                     provider: None,
                 };
-                if let Ok(track_results) = search_track(track_query).await {
+                if let Ok(track_results) = search_track_for_user(user_id, track_query).await {
                     if track_results
                         .results
                         .iter()
@@ -182,7 +183,7 @@ async fn process_row(
             query: row.title.clone(),
             provider: None,
         };
-        if let Ok(track_results) = search_track(track_query).await {
+        if let Ok(track_results) = search_track_for_user(user_id, track_query).await {
             if track_results
                 .results
                 .iter()
