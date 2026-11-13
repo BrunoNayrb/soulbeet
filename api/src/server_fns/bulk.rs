@@ -411,7 +411,56 @@ async fn queue_matched(
                 enqueued.iter().map(WatchedTransfer::from).collect();
             let task_username = username.to_string();
             let task_cancellation = register_user_task(username).await;
+            let watched_batch = batch.owner.batch_id.clone();
+            let watched_title = row.title.clone();
+            let watched_artist = row.artist.clone();
+            let watched_album = row.album.clone();
+            let mut events = tx.subscribe();
             tokio::spawn(async move {
+                let listener = tokio::spawn(async move {
+                    loop {
+                        match events.recv().await {
+                            Ok(DownloadEvent::Progress(entries)) => {
+                                for entry in entries {
+                                    if entry.batch_id.as_deref() != Some(watched_batch.as_str()) {
+                                        continue;
+                                    }
+                                    let reason = match &entry.state {
+                                        DownloadState::Failed(reason) => {
+                                            let detail = entry
+                                                .error
+                                                .clone()
+                                                .filter(|text| !text.is_empty());
+                                            Some(match detail {
+                                                Some(detail) if detail.len() > reason.len() => detail,
+                                                _ => reason.clone(),
+                                            })
+                                        }
+                                        DownloadState::Cancelled => Some(
+                                            entry
+                                                .error
+                                                .clone()
+                                                .filter(|text| !text.is_empty())
+                                                .unwrap_or_else(|| "Download cancelled".into()),
+                                        ),
+                                        _ => None,
+                                    };
+                                    if let Some(reason) = reason {
+                                        mark_transfer_failed(
+                                            &watched_title,
+                                            &watched_artist,
+                                            &watched_album,
+                                            &reason,
+                                        )
+                                        .await;
+                                    }
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                });
                 let mut monitor = DownloadMonitor::new(
                     transfers,
                     batch.target.clone(),
@@ -421,12 +470,37 @@ async fn queue_matched(
                     batch,
                 );
                 monitor.run().await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                listener.abort();
                 unregister_user_task(&task_username).await;
             });
         }
     }
 
     Ok(source)
+}
+
+#[cfg(feature = "server")]
+async fn mark_transfer_failed(title: &str, artist: &str, album: &Option<String>, reason: &str) {
+    let _guard = history_lock().lock().await;
+    let mut all = read_history_inner().await;
+    let mut changed = false;
+    for item in &mut all {
+        if item.row.title == title
+            && item.row.artist == artist
+            && item.row.album == album
+            && (item.status == "queued" || item.status == "working")
+        {
+            item.status = "failed".into();
+            item.reason = Some(reason.to_string());
+            item.source = None;
+            changed = true;
+            break;
+        }
+    }
+    if changed {
+        write_history_inner(&all).await;
+    }
 }
 
 #[cfg(not(feature = "server"))]
