@@ -275,15 +275,35 @@ fn csv_field(value: &str) -> String {
     }
 }
 
+fn repair_split_title(row: &BulkRow) -> BulkRow {
+    let title = row.title.as_str();
+    let album = row.album.as_deref().unwrap_or("");
+    let artist = row.artist.as_str();
+    if title.starts_with('"') && album.ends_with('"') && artist.starts_with('"') {
+        let rest = parse_csv_line(artist);
+        if rest.len() >= 2 && !rest[0].is_empty() {
+            let title_body = title.trim_start_matches('"');
+            let album_body = album.trim_end_matches('"').trim();
+            return BulkRow {
+                title: format!("{title_body}, {album_body}"),
+                album: Some(rest[0].clone()),
+                artist: rest[1].clone(),
+            };
+        }
+    }
+    row.clone()
+}
+
 fn failed_csv(results: &[BulkResult]) -> String {
     let mut out = String::from("title,album,artist\n");
     for result in results.iter().filter(|row| row.status == "failed") {
-        let album = result.row.album.as_deref().unwrap_or("");
-        out.push_str(&csv_field(&result.row.title));
+        let row = repair_split_title(&result.row);
+        let album = row.album.as_deref().unwrap_or("");
+        out.push_str(&csv_field(&row.title));
         out.push(',');
         out.push_str(&csv_field(album));
         out.push(',');
-        out.push_str(&csv_field(&result.row.artist));
+        out.push_str(&csv_field(&row.artist));
         out.push('\n');
     }
     out
