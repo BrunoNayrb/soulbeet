@@ -87,15 +87,12 @@ pub fn BulkPage() -> Element {
                 .lines()
                 .skip(1)
                 .filter_map(|line| {
-                    let parts: Vec<&str> = line.splitn(3, ',').collect();
-                    if parts.len() >= 2 {
+                    let parts = parse_csv_line(line);
+                    if parts.len() >= 2 && !parts[0].is_empty() {
                         Some(BulkRow {
-                            title: parts[0].trim().to_string(),
-                            album: parts
-                                .get(1)
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty()),
-                            artist: parts.get(2).unwrap_or(&"").trim().to_string(),
+                            title: parts[0].clone(),
+                            album: parts.get(1).cloned().filter(|s| !s.is_empty()),
+                            artist: parts.get(2).cloned().unwrap_or_default(),
                         })
                     } else {
                         None
@@ -237,6 +234,37 @@ pub fn BulkPage() -> Element {
             }
         }
     }
+}
+
+
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    cur.push('"');
+                    chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                cur.push(c);
+            }
+        } else if c == '"' {
+            in_quotes = true;
+        } else if c == ',' {
+            fields.push(cur.trim().to_string());
+            cur.clear();
+        } else {
+            cur.push(c);
+        }
+    }
+    fields.push(cur.trim().to_string());
+    fields
 }
 
 fn csv_field(value: &str) -> String {
