@@ -519,12 +519,17 @@ fn pick_file(groups: &[DownloadableGroup], wanted_title: &str) -> Option<Downloa
     let wanted = loose(wanted_title);
     let mut best: Option<(f64, DownloadableItem)> = None;
     for group in groups {
-        let group_label = format!("{} {}", group.title, group.artist.as_deref().unwrap_or(""));
+        let group_label = format!(
+            "{} {} {}",
+            group.title,
+            group.artist.as_deref().unwrap_or(""),
+            group.group_id
+        );
         if is_live(&group_label) {
             continue;
         }
         for item in &group.items {
-            let item_label = format!("{} {} {}", item.title, item.album, item.artist);
+            let item_label = format!("{} {} {} {}", item.title, item.album, item.artist, item.id);
             if is_live(&item_label) {
                 continue;
             }
