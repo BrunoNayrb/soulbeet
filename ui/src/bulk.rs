@@ -6,6 +6,7 @@ use api::server_fns::bulk::{
 use api::server_fns::folder::get_user_folders;
 use crate::{SearchGo, SearchPrefill};
 use gloo_timers::future::TimeoutFuture;
+use wasm_bindgen::JsCast;
 
 #[component]
 pub fn BulkPage() -> Element {
@@ -166,6 +167,12 @@ pub fn BulkPage() -> Element {
                     if loading() { "Importing..." } else { "Import" }
                 }
                 button {
+                    class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50",
+                    disabled: results().iter().all(|row| row.status != "failed"),
+                    onclick: move |_| download_failed_csv(results.read().as_slice()),
+                    "Export failed"
+                }
+                button {
                     class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded",
                     onclick: clear,
                     "Clear history"
@@ -230,4 +237,68 @@ pub fn BulkPage() -> Element {
             }
         }
     }
+}
+
+fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+fn failed_csv(results: &[BulkResult]) -> String {
+    let mut out = String::from("title,album,artist\n");
+    for result in results.iter().filter(|row| row.status == "failed") {
+        let album = result.row.album.as_deref().unwrap_or("");
+        out.push_str(&csv_field(&result.row.title));
+        out.push(',');
+        out.push_str(&csv_field(album));
+        out.push(',');
+        out.push_str(&csv_field(&result.row.artist));
+        out.push('\n');
+    }
+    out
+}
+
+fn download_failed_csv(results: &[BulkResult]) {
+    let contents = failed_csv(results);
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Ok(link) = document.create_element("a") else {
+        return;
+    };
+    let parts = js_sys::Array::new();
+    parts.push(&wasm_bindgen::JsValue::from_str(&contents));
+    let mut bag = web_sys::BlobPropertyBag::new();
+    bag.set_type("text/csv;charset=utf-8");
+    let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&parts, &bag) else {
+        return;
+    };
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+        return;
+    };
+    if link.set_attribute("href", &url).is_err() || link.set_attribute("download", "failed-tracks.csv").is_err() {
+        let _ = web_sys::Url::revoke_object_url(&url);
+        return;
+    }
+    let Some(body) = document.body() else {
+        let _ = web_sys::Url::revoke_object_url(&url);
+        return;
+    };
+    if body.append_child(&link).is_err() {
+        let _ = web_sys::Url::revoke_object_url(&url);
+        return;
+    }
+    let Ok(link) = link.dyn_into::<web_sys::HtmlElement>() else {
+        let _ = web_sys::Url::revoke_object_url(&url);
+        return;
+    };
+    link.click();
+    let _ = body.remove_child(&link);
+    let _ = web_sys::Url::revoke_object_url(&url);
 }
